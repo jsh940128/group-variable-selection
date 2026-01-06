@@ -1,5 +1,5 @@
-from .LabelBVS import LabelBVS
-from .WordFrequencyGenerator import WordFrequencyGenerator
+from .label_bvs import LabelBVS
+from .word.frequency import WordFrequencyGenerator
 
 class UnstructureVariableSelection(LabelBVS, WordFrequencyGenerator):
     def __init__(self, 

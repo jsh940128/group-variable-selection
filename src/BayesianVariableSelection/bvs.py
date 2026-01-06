@@ -29,7 +29,7 @@ from statsmodels.api import OLS
 from .utils import summary_to_df, find_cluster_members
 
 # Inherit base object from Interface
-from .BaseBayesianSelection import BaseSelection 
+from .base import BaseSelection 
 
 class BayesianVariableSelection(BaseSelection):
     def __init__(self, X: pd.DataFrame, y: pd.Series, weight = None, dist_type = 'cooccur', track = False):
@@ -301,7 +301,9 @@ class BayesianVariableSelection(BaseSelection):
                     mu[j, k] = 0
                 else:
                     bjmu = tmp_mean / tmp_var
-                    mu[j, k] = np.random.normal(bjmu, 1 / np.sqrt(tmp_var))
+                    draw = np.random.normal(bjmu, 1 / np.sqrt(tmp_var))
+                    
+                    mu[j, k] = draw[0]
                     
         return z, mu, nbhd_ids
                 

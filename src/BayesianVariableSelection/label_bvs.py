@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from .BayesianVariableSelection import BayesianVariableSelection
+from .bvs import BayesianVariableSelection
 
 class LabelBVS(BayesianVariableSelection):
     def __init__(self, X, y, stop_word_path = None, weight = None, dist_type = 'cooccur', track = False):

@@ -15,7 +15,7 @@ from numpy import nan as NULL
 from scipy.stats import invgamma, uniform, norm, dirichlet, rv_discrete
 
 # Inherit base object from Interface
-from .BaseBayesianSelection import BaseSelection 
+from .base import BaseSelection 
 
 class BayesianVariableSelection(BaseSelection):
     def __init__(self, X: pd.DataFrame, y: pd.Series):

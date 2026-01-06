@@ -1,6 +1,6 @@
 # VariableSelectionModel
-from .UnstructureVariableSelection import UnstructureVariableSelection
-from .QualityCalculator import QualityCalculator
+from ..unstructured import UnstructureVariableSelection
+from ..quality import QualityCalculator
 
 # Data Preprocessing Model
 import numpy as np
