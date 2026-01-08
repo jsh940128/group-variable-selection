@@ -1,5 +1,8 @@
 .venv
 .env
 output/
-data/
+data/raw/raw*
+data/raw/251205*
 __pycache__/
+notebook/analysis*
+notebook/example_unstructured*
