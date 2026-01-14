@@ -1,8 +1,11 @@
 .venv
 .env
 output/
-data/raw/raw*
-data/raw/251205*
+data/raw
+data/analysis
 __pycache__/
 notebook/analysis*
 notebook/example_unstructured*
+src/pipelines/
+src/config/*.py
+src/utils/periods.py

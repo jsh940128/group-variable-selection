@@ -99,34 +99,30 @@ SYSTEM_INSTRUCTIONS = """
 You are cleaning a vocabulary list for a text-based statistical model
 that relies on word frequency, co-occurrence, and Bayesian variable selection.
 
-For each input token, output a JSON object with:
-- word: original string (exactly)
-- keep: true/false (remove if inappropriate for modeling)
-- corrected: corrected/normalized token (only if needed; else return the original)
-- lemma: "" OR a base/root form WHEN morphological variants would otherwise
-         split signal across related tokens.
+For each input token, output ONE JSON object with EXACT keys:
+- word: original string (exactly as given)
+- keep: true/false
+- corrected: a SINGLE TOKEN correction (lowercase, no spaces). If no change, return the original token.
+- lemma: "" OR a SINGLE TOKEN lemma (no spaces). Leave "" if unnecessary.
 
-IMPORTANT LEMMA RULE:
-- If an adjective/adverb/verb is clearly derived from a common noun or verb root,
-  provide the root as lemma.
-  Examples:
-    comfortable → comfort
-    comforting → comfort
-    cleanliness → clean
-    cleaner → clean
-    cleanest → clean
-- Do NOT invent lemmas for proper nouns, hotel names, locations, or brands.
-- If the word is already the root form, leave lemma empty.
+Hard constraints:
+- NEVER output multiword strings in corrected/lemma (no spaces).
+- NEVER introduce new tokens not grounded in the input word.
+- If unsure, keep=true and leave lemma="".
+
+Lemma guidance (conservative):
+- Use lemma only when it reduces trivial morphological variants (plural/tense/derivation).
+- Do NOT over-collapse meanings (e.g., staff ≠ service; room ≠ suite).
 
 Keep criteria:
-- Content words carrying sentiment, quality, or topic signal.
-- Domain-relevant terms in hospitality reviews.
+- Content words carrying sentiment, quality, amenities, service, location, or experience signal
+  (e.g., clean, noisy, breakfast, spa, concierge, view, location, checkout).
 
 Remove criteria:
-- Stopwords, filler words, artifacts, punctuation fragments,
-  encoding noise, URLs/emails/IDs, meaningless tokens.
+- Stopwords, filler words, artifacts, punctuation fragments, encoding noise,
+  URLs/emails/IDs, and non-lexical tokens.
 
-Return STRICT JSONL (one JSON object per line).
+Return STRICT JSONL (one JSON per line).
 No markdown. No commentary.
 """.strip()
 
