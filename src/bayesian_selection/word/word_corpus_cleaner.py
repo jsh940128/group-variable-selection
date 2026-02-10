@@ -4,13 +4,13 @@ import json
 import math
 import os
 import re
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple
 
 import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
-
 
 # ============================================================
 # 0) Config / CLI
@@ -42,14 +42,15 @@ def parse_args() -> argparse.Namespace:
 def resolve_input_path(cli_value: str | None) -> Path:
     raw = cli_value or os.getenv("WORD_CORPUS_XLSX")
     if not raw:
-        raise SystemExit(
-            "ERROR: Provide --word-corpus-xlsx PATH or set env var WORD_CORPUS_XLSX."
-        )
+        print("ERROR: Provide --word-corpus-xlsx PATH or set env var WORD_CORPUS_XLSX.")
+        sys.exit(1)
     p = Path(raw).expanduser().resolve()
     if not p.exists():
-        raise SystemExit(f"ERROR: File not found: {p}")
+        print(f"ERROR: File not found: {p}")
+        sys.exit(1)
     if p.suffix.lower() not in {".xlsx", ".xls"}:
-        raise SystemExit(f"ERROR: Expected an Excel file (.xlsx/.xls). Got: {p.name}")
+        print(f"ERROR: Expected an Excel file (.xlsx/.xls). Got: {p.name}")
+        sys.exit(1)
     return p
 
 
@@ -128,29 +129,44 @@ No markdown. No commentary.
 
 
 def call_review_batch(client: OpenAI, model: str, batch_words: list[str]) -> list[dict]:
+    """
+    Sends a batch of words to OpenAI and parses the JSONL response.
+    Includes error handling to prevent the script from crashing on bad API responses.
+    """
     payload = {"words": batch_words}
-    resp = client.responses.create(
-        model=model,
-        instructions=SYSTEM_INSTRUCTIONS,
-        input=json.dumps(payload, ensure_ascii=False),
-    )
-    text = (resp.output_text or "").strip()
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+            ],
+            temperature=0.0
+        )
+        text = (resp.choices[0].message.content or "").strip()
 
-    rows: list[dict] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except Exception:
-            # Ignore malformed lines, keep going
-            continue
-    return rows
+        rows: list[dict] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Handle potential markdown code blocks if the model ignores instructions
+            if line.startswith("```"): continue 
+            
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                print(f"  [Warning] Skipping malformed JSON line: {line[:40]}...")
+                continue
+        return rows
+
+    except Exception as e:
+        print(f"  [Error] API Batch Failed: {e}")
+        return [] # Return empty list; logic will fallback to keeping original words
 
 
 # ============================================================
-# 4) Public method: clean_word_corpus(...)
+# 4) Main Logic: clean_word_corpus(...)
 # ============================================================
 def clean_word_corpus(
     word_corpus_xlsx: str | Path,
@@ -162,13 +178,6 @@ def clean_word_corpus(
 ) -> dict[str, Any]:
     """
     Clean a vocabulary XLSX in-place (token column) and write a *_cleaned.xlsx copy.
-
-    Prints:
-      - input path
-      - output path
-      - summary of changes
-
-    Returns a summary dict for programmatic use.
     """
     if load_env:
         load_dotenv()
@@ -179,9 +188,7 @@ def clean_word_corpus(
     in_path = Path(word_corpus_xlsx).expanduser().resolve()
     if not in_path.exists():
         raise FileNotFoundError(f"File not found: {in_path}")
-    if in_path.suffix.lower() not in {".xlsx", ".xls"}:
-        raise ValueError(f"Expected an Excel file (.xlsx/.xls). Got: {in_path.name}")
-
+    
     out_path = in_path.with_name(in_path.stem + "_cleaned.xlsx")
 
     print(f"[word_corpus_cleaner] Input file : {in_path}")
@@ -193,14 +200,12 @@ def clean_word_corpus(
     # --- Detect token column
     word_col = detect_word_col(df.columns)
 
-    # --- Ensure lemma column exists (NO other new columns)
+    # --- Ensure lemma column exists
     if "lemma" not in df.columns:
-        df["lemma"] = pd.NA
-
-    # place lemma immediately to the right of the token column
-    cols = [c for c in df.columns if c != "lemma"]
-    cols.insert(cols.index(word_col) + 1, "lemma")
-    df = df.reindex(columns=cols)
+        # Place lemma immediately to the right of the token column
+        cols = list(df.columns)
+        cols.insert(cols.index(word_col) + 1, "lemma")
+        df = df.reindex(columns=cols)
 
     # --- Normalize word cells + drop blank rows
     raw_rows = len(df)
@@ -222,69 +227,70 @@ def clean_word_corpus(
     num_batches = math.ceil(len(tokens_for_api) / batch_size) if tokens_for_api else 0
 
     review_map: dict[str, dict] = {}  # word -> {keep, corrected, lemma}
-    malformed_jsonl_lines = 0
+    
+    print(f"[word_corpus_cleaner] Processing {len(tokens_for_api)} unique tokens in {num_batches} batches...")
 
     for i in range(num_batches):
         batch = tokens_for_api[i * batch_size : (i + 1) * batch_size]
         result_rows = call_review_batch(client=client, model=model, batch_words=batch)
 
-        # Track coverage: if model returns fewer rows than inputs, that's a signal of formatting loss
-        # (not fatal; we fallback to keep-as-is)
-        returned_words = set()
         for r in result_rows:
             w = str(r.get("word", "")).strip()
-            if not w:
-                malformed_jsonl_lines += 1
+            if not w: 
                 continue
-            returned_words.add(w)
             review_map[w] = {
                 "keep": bool(r.get("keep", True)),
                 "corrected": (r.get("corrected") or w).strip(),
                 "lemma": (r.get("lemma") or "").strip(),
             }
+        
+        # Simple progress indicator
+        if (i + 1) % 5 == 0:
+            print(f"  Batch {i+1}/{num_batches} complete.")
 
-    # --- Apply decisions + compute summary stats
-    def apply_decision(w: str):
-        # drop obvious noise
+    # --- Apply decisions (Optimized: Single Pass) ---
+    def get_decision_row(w: str) -> Tuple[bool, str, Any, str]:
+        # 1. Obvious noise check
         if w in obvious_noise_set:
-            return False, w, "", "obvious_noise"
+            return False, w, pd.NA, "obvious_noise"
 
+        # 2. API Result check
         ann = review_map.get(w)
         if ann is None:
-            # fallback: keep as-is, no lemma
-            return True, w, "", "fallback_keep"
+            # Fallback: keep as-is if model missed it
+            return True, w, pd.NA, "fallback_keep"
 
         keep = ann["keep"]
         corrected = ann["corrected"] or w
-        lemma = ann["lemma"] or ""
+        # Use pd.NA for empty lemmas to ensure clean Excel output
+        lemma = ann["lemma"] if ann["lemma"] else pd.NA
         reason = "model_keep" if keep else "model_drop"
+        
         return keep, corrected, lemma, reason
 
-    decisions = df[word_col].apply(apply_decision)
+    # Generate all columns in one list comprehension (fastest method)
+    results = [get_decision_row(w) for w in df[word_col]]
+    
+    # Unpack results into separate tuples
+    keep_flags, corrected_vals, lemma_vals, reasons = zip(*results)
 
-    df["__keep"] = decisions.map(lambda t: t[0])
-    corrected_series = decisions.map(lambda t: t[1])
-    lemma_series = decisions.map(lambda t: t[2])
-    reason_series = decisions.map(lambda t: t[3])
-
-    # token-level stats (unique)
-    # Count how many tokens changed after correction
-    # (based on per-row mapping; approximate but useful)
-    corrections_rows = int((df[word_col] != corrected_series).sum())
-    lemma_rows_filled = int((lemma_series != "").sum())
-
-    # Apply corrections
-    df[word_col] = corrected_series
-    df["lemma"] = lemma_series.map(lambda x: x if x else pd.NA)
-
+    # Assign back to DataFrame
+    df["__keep"] = keep_flags
+    df[word_col] = corrected_vals
+    df["lemma"] = lemma_vals
+    
+    # Calculate stats
     before_filter_rows = len(df)
-    dropped_obvious_rows = int((reason_series == "obvious_noise").sum())
-    dropped_model_rows = int((reason_series == "model_drop").sum())
+    dropped_obvious_rows = reasons.count("obvious_noise")
+    dropped_model_rows = reasons.count("model_drop")
+    
+    # Correction stats (approximate, row-based)
+    corrections_rows = sum(1 for orig, new in zip(df[word_col], corrected_vals) if orig != new)
+    lemma_rows_filled = sum(1 for x in lemma_vals if not pd.isna(x))
 
+    # --- Final Filtering ---
     df = df[df["__keep"]].drop(columns=["__keep"]).copy()
     final_rows = len(df)
-
-    # Unique tokens after correction (post-drop)
     final_unique = df[word_col].nunique(dropna=True)
 
     # --- Save
@@ -311,10 +317,6 @@ def clean_word_corpus(
             "lemma_filled_rows": lemma_rows_filled,
         },
         "model": {"name": model, "batch_size": batch_size},
-        "notes": {
-            "malformed_jsonl_lines_seen": malformed_jsonl_lines,
-            "fallback_behavior": "If a token is missing from model output, it is kept as-is with empty lemma.",
-        },
     }
 
     print("\n[word_corpus_cleaner] Summary")
@@ -328,15 +330,13 @@ def clean_word_corpus(
     print(f"  Unique tokens sent to API    : {len(tokens_for_api):,}")
     print(f"  Row-level token corrections  : {corrections_rows:,}")
     print(f"  Rows with lemma filled       : {lemma_rows_filled:,}")
-    if malformed_jsonl_lines:
-        print(f"  Warning: malformed JSONL lines ignored: {malformed_jsonl_lines:,}")
     print(f"  Saved cleaned workbook       : {out_path}")
 
     return summary
 
 
 # ============================================================
-# 5) CLI entry point (still works)
+# 5) CLI entry point
 # ============================================================
 def main() -> None:
     args = parse_args()

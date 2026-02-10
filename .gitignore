@@ -4,8 +4,8 @@ output/
 data/raw
 data/analysis
 __pycache__/
-notebook/analysis*
-notebook/example_unstructured*
+notebook/workflows
+notebook/legacy
 src/pipelines/
 src/config/*.py
 src/utils/periods.py
